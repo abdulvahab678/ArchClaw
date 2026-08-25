@@ -160,7 +160,7 @@ class BootstrapService {
         progress: 0.1,
         message: 'Updating package lists...',
       ));
-      await NativeBridge.runInProot('pacman -Sy --noconfirm');
+      await NativeBridge.runInProot('pacman --disable-sandbox -Sy --noconfirm');
 
       _updateSetupNotification('Installing base packages...', progress: 52);
       onProgress(const SetupState(
@@ -183,7 +183,7 @@ class BootstrapService {
         'echo "Etc/UTC" > /etc/timezone',
       );
       await NativeBridge.runInProot(
-        'pacman -S --noconfirm --needed '
+        'pacman --disable-sandbox -S --noconfirm --needed '
         'ca-certificates git python make g++ curl wget',
       );
 
