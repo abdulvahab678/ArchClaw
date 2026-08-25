@@ -273,4 +273,5 @@ GPL-3.0 - See [LICENSE](LICENSE)
 
 ---
 
-**Install. Setup. Code with Qwen. All in one APK.** 🐉
+**Install. Setup. Code with Qwen. All in one APK.** 🐉.
+
