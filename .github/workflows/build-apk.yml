@@ -65,9 +65,15 @@ jobs:
           loader32=$(find . -name "loader32" -path "*/proot/*" -type f | head -1)
           [ -n "$loader32" ] && cp "$loader32" "$GITHUB_WORKSPACE/$JNILIBS/libprootloader32.so" && chmod 755 "$GITHUB_WORKSPACE/$JNILIBS/libprootloader32.so"
           
-          # Copy libtalloc
+          # Copy libtalloc (keep the versioned SONAME libproot.so actually needs,
+          # plus an unversioned copy as a safety fallback)
           talloc=$(find . -name "libtalloc.so*" -not -name "*.py" -type f | head -1)
-          [ -n "$talloc" ] && cp -L "$talloc" "$GITHUB_WORKSPACE/$JNILIBS/libtalloc.so" && chmod 755 "$GITHUB_WORKSPACE/$JNILIBS/libtalloc.so"
+          if [ -n "$talloc" ]; then
+            cp -L "$talloc" "$GITHUB_WORKSPACE/$JNILIBS/libtalloc.so.2"
+            chmod 755 "$GITHUB_WORKSPACE/$JNILIBS/libtalloc.so.2"
+            cp -L "$talloc" "$GITHUB_WORKSPACE/$JNILIBS/libtalloc.so"
+            chmod 755 "$GITHUB_WORKSPACE/$JNILIBS/libtalloc.so"
+          fi
           
           rm -rf "$TMP_DIR"
           
