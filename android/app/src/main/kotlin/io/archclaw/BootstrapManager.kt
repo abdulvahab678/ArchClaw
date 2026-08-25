@@ -10,6 +10,8 @@ import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.io.InputStream
+import java.net.HttpURLConnection
+import java.net.URL
 import java.util.zip.GZIPInputStream
 import org.apache.commons.compress.archivers.ar.ArArchiveInputStream
 import org.apache.commons.compress.archivers.tar.TarArchiveEntry
@@ -32,20 +34,124 @@ class BootstrapManager(
         listOf(rootfsDir, tmpDir, homeDir, configDir, "$homeDir/.openclaw", libDir).forEach {
             File(it).mkdirs()
         }
-        // Termux's proot links against libtalloc.so.2 but Android extracts it
-        // as libtalloc.so (jniLibs naming convention). Create a copy with the
-        // correct SONAME so the dynamic linker finds it.
+        // PRoot and its Android-native dependencies are bundled in the APK.
+        // The GitHub Actions build prepares them in jniLibs/arm64-v8a.
+        ensureProotBinaries()
         setupLibtalloc()
         // Create fake /proc and /sys files for proot bind mounts
         setupFakeSysdata()
     }
 
+
+    /**
+     * Copy the PRoot runtime and its native dependencies from the APK.
+     *
+     * The release workflow downloads the Android-patched Termux binaries and
+     * places them under jniLibs/arm64-v8a. PRoot is then executed from the
+     * app's native library directory. We intentionally do not download an
+     * unpatched PRoot at runtime: the workflow patches PRoot's DT_NEEDED entry
+     * from libtalloc.so.2 to libtalloc.so because Android's native-library
+     * packaging/extraction convention requires the .so filename.
+     */
+    private fun ensureProotBinaries() {
+        val prootFile = File(libDir, "libproot.so")
+        val loaderFile = File(libDir, "libprootloader.so")
+        val loader32File = File(libDir, "libprootloader32.so")
+        val tallocFile = File(libDir, "libtalloc.so")
+        val shmemFile = File(libDir, "libandroid-shmem.so")
+
+        val nativeProot = File(nativeLibDir, "libproot.so")
+        if (!nativeProot.exists()) {
+            throw IllegalStateException(
+                "Bundled PRoot binary is missing: ${nativeProot.absolutePath}. " +
+                    "Rebuild the APK using the updated GitHub Actions workflow."
+            )
+        }
+
+        // Always refresh the private copies from the APK. This prevents an
+        // older installation from leaving a stale PRoot/talloc pair behind.
+        nativeProot.copyTo(prootFile, overwrite = true)
+        prootFile.setExecutable(true, false)
+
+        File(nativeLibDir, "libprootloader.so").takeIf { it.exists() }?.let { source ->
+            source.copyTo(loaderFile, overwrite = true)
+            loaderFile.setExecutable(true, false)
+        }
+
+        File(nativeLibDir, "libprootloader32.so").takeIf { it.exists() }?.let { source ->
+            source.copyTo(loader32File, overwrite = true)
+            loader32File.setExecutable(true, false)
+        }
+
+        File(nativeLibDir, "libtalloc.so").takeIf { it.exists() }?.let { source ->
+            source.copyTo(tallocFile, overwrite = true)
+            tallocFile.setExecutable(true, false)
+        }
+
+        File(nativeLibDir, "libandroid-shmem.so").takeIf { it.exists() }?.let { source ->
+            source.copyTo(shmemFile, overwrite = true)
+            shmemFile.setExecutable(true, false)
+        }
+
+        if (!tallocFile.exists()) {
+            throw IllegalStateException(
+                "Bundled libtalloc.so is missing. Rebuild the APK using the updated GitHub Actions workflow."
+            )
+        }
+
+        if (!shmemFile.exists()) {
+            throw IllegalStateException(
+                "Bundled libandroid-shmem.so is missing. Rebuild the APK using the updated GitHub Actions workflow."
+            )
+        }
+
+        android.util.Log.i(
+            "ArchClaw",
+            "Bundled PRoot ready: ${prootFile.absolutePath}"
+        )
+    }
+
+    /** Download with HTTP resume support. Continues from partial file. */
+    private fun downloadWithResume(url: URL, destFile: File) {
+        val conn = url.openConnection() as HttpURLConnection
+        conn.connectTimeout = 30000
+        conn.readTimeout = 60000
+        conn.requestMethod = "GET"
+        if (destFile.exists()) {
+            conn.setRequestProperty("Range", "bytes=${destFile.length()}-")
+        }
+        val code = conn.responseCode
+        if (code != 200 && code != 206) {
+            conn.disconnect()
+            throw RuntimeException("Download failed: HTTP $code")
+        }
+        val isResume = code == 206
+        conn.inputStream.use { input ->
+            FileOutputStream(destFile, isResume).use { output ->
+                val buf = ByteArray(65536)
+                var n: Int
+                while (input.read(buf).also { n = it } != -1) output.write(buf, 0, n)
+            }
+        }
+        conn.disconnect()
+    }
+
     private fun setupLibtalloc() {
-        val source = File("$nativeLibDir/libtalloc.so")
-        val target = File("$libDir/libtalloc.so.2")
-        if (source.exists() && !target.exists()) {
-            source.copyTo(target)
-            target.setExecutable(true)
+        val target = File("$libDir/libtalloc.so")
+        val nativeSource = File("$nativeLibDir/libtalloc.so")
+
+        if (nativeSource.exists()) {
+            nativeSource.copyTo(target, overwrite = true)
+            target.setExecutable(true, false)
+        }
+
+        // PRoot is linked against this Termux Android compatibility library.
+        val shmemTarget = File("$libDir/libandroid-shmem.so")
+        val shmemSource = File("$nativeLibDir/libandroid-shmem.so")
+
+        if (shmemSource.exists()) {
+            shmemSource.copyTo(shmemTarget, overwrite = true)
+            shmemTarget.setExecutable(true, false)
         }
     }
 
