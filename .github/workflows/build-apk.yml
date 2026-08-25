@@ -10,7 +10,7 @@ jobs:
   build-android:
     name: Build Flutter APK
     runs-on: ubuntu-22.04
-    
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -33,53 +33,210 @@ jobs:
       - name: Accept Android licenses
         run: yes | sdkmanager --licenses || true
 
-      - name: Fetch proot binaries from Termux
+      - name: Fetch and prepare Android PRoot binaries
+        shell: bash
         run: |
-          set -x
-          JNILIBS="flutter_app/android/app/src/main/jniLibs/arm64-v8a"
-          mkdir -p "$JNILIBS"
-          TMP_DIR=$(mktemp -d)
+          set -euo pipefail
+
+          JNILIBS="$GITHUB_WORKSPACE/flutter_app/android/app/src/main/jniLibs/arm64-v8a"
           TERMUX_REPO="https://packages-cf.termux.dev/apt/termux-main"
-          
-          # Get package URL
-          pkg_url=$(curl -fsSL "${TERMUX_REPO}/dists/stable/main/binary-aarch64/Packages" | \
-            grep -A 20 "^Package: proot$" | grep "^Filename:" | head -1 | awk '{print $2}')
-          echo "Package: $pkg_url"
-          
-          # Download and extract
-          curl -fsSL "${TERMUX_REPO}/${pkg_url}" -o "$TMP_DIR/proot.deb"
-          cd "$TMP_DIR"
-          ar x proot.deb
-          if [ -f data.tar.xz ]; then tar xf data.tar.xz; elif [ -f data.tar.gz ]; then tar xf data.tar.gz; fi
-          
-          # Copy proot as libproot.so
-          proot_bin=$(find . -name "proot" -path "*/bin/*" -type f | head -1)
-          echo "Found: $proot_bin"
-          cp "$proot_bin" "$GITHUB_WORKSPACE/$JNILIBS/libproot.so"
-          chmod 755 "$GITHUB_WORKSPACE/$JNILIBS/libproot.so"
-          
-          # Copy loader
-          loader=$(find . -name "loader" -not -name "loader32" -path "*/proot/*" -type f | head -1)
-          [ -n "$loader" ] && cp "$loader" "$GITHUB_WORKSPACE/$JNILIBS/libprootloader.so" && chmod 755 "$GITHUB_WORKSPACE/$JNILIBS/libprootloader.so"
-          
-          loader32=$(find . -name "loader32" -path "*/proot/*" -type f | head -1)
-          [ -n "$loader32" ] && cp "$loader32" "$GITHUB_WORKSPACE/$JNILIBS/libprootloader32.so" && chmod 755 "$GITHUB_WORKSPACE/$JNILIBS/libprootloader32.so"
-          
-          # Copy libtalloc (keep the versioned SONAME libproot.so actually needs,
-          # plus an unversioned copy as a safety fallback)
-          talloc=$(find . -name "libtalloc.so*" -not -name "*.py" -type f | head -1)
-          if [ -n "$talloc" ]; then
-            cp -L "$talloc" "$GITHUB_WORKSPACE/$JNILIBS/libtalloc.so.2"
-            chmod 755 "$GITHUB_WORKSPACE/$JNILIBS/libtalloc.so.2"
-            cp -L "$talloc" "$GITHUB_WORKSPACE/$JNILIBS/libtalloc.so"
-            chmod 755 "$GITHUB_WORKSPACE/$JNILIBS/libtalloc.so"
+          TMP_DIR="$(mktemp -d)"
+
+          cleanup() {
+            rm -rf "$TMP_DIR"
+          }
+          trap cleanup EXIT
+
+          echo "=== Installing ELF/package tools ==="
+          sudo apt-get update
+          sudo apt-get install -y patchelf binutils zstd
+
+          # Always start clean so an older libtalloc.so.2/libproot.so cannot
+          # accidentally survive in the build workspace.
+          rm -rf "$GITHUB_WORKSPACE/flutter_app/android/app/src/main/jniLibs"
+          mkdir -p "$JNILIBS"
+
+          fetch_termux_package() {
+            local package_name="$1"
+            local package_dir="$2"
+
+            echo ""
+            echo "=== Fetching Termux package: ${package_name} ==="
+
+            local packages_file="$TMP_DIR/${package_name}-Packages"
+            curl -fsSL \
+              "${TERMUX_REPO}/dists/stable/main/binary-aarch64/Packages" \
+              -o "$packages_file"
+
+            local pkg_url
+            pkg_url=$(awk -v pkg="$package_name" '
+              $0 == "Package: " pkg { found=1; next }
+              found && /^Filename:/ { print $2; exit }
+              found && /^Package:/ { exit }
+            ' "$packages_file")
+
+            if [ -z "$pkg_url" ]; then
+              echo "ERROR: Package not found: $package_name"
+              exit 1
+            fi
+
+            echo "Package URL: $pkg_url"
+
+            local deb_file="$TMP_DIR/${package_name}.deb"
+            curl -fsSL "${TERMUX_REPO}/${pkg_url}" -o "$deb_file"
+
+            mkdir -p "$package_dir"
+            cd "$package_dir"
+            ar x "$deb_file"
+
+            if [ -f data.tar.xz ]; then
+              tar -xf data.tar.xz
+            elif [ -f data.tar.zst ]; then
+              unzstd -f data.tar.zst -o data.tar
+              tar -xf data.tar
+            elif [ -f data.tar.gz ]; then
+              tar -xzf data.tar.gz
+            else
+              echo "ERROR: No supported data.tar.* archive in $deb_file"
+              exit 1
+            fi
+
+            cd "$GITHUB_WORKSPACE"
+          }
+
+          PROOT_DIR="$TMP_DIR/proot"
+          TALLOC_DIR="$TMP_DIR/libtalloc"
+          SHMEM_DIR="$TMP_DIR/libandroid-shmem"
+
+          fetch_termux_package "proot" "$PROOT_DIR"
+          fetch_termux_package "libtalloc" "$TALLOC_DIR"
+          fetch_termux_package "libandroid-shmem" "$SHMEM_DIR"
+
+          echo ""
+          echo "=== Locating PRoot ==="
+          PROOT_BIN=$(find "$PROOT_DIR" -type f -path '*/bin/proot' | head -1)
+          test -n "$PROOT_BIN"
+          echo "PRoot: $PROOT_BIN"
+          cp "$PROOT_BIN" "$JNILIBS/libproot.so"
+          chmod 755 "$JNILIBS/libproot.so"
+
+          echo ""
+          echo "=== Locating PRoot loaders ==="
+          LOADER=$(find "$PROOT_DIR" -type f -path '*/proot/loader' ! -name 'loader32' | head -1 || true)
+          if [ -n "$LOADER" ]; then
+            echo "Loader: $LOADER"
+            cp "$LOADER" "$JNILIBS/libprootloader.so"
+            chmod 755 "$JNILIBS/libprootloader.so"
           fi
-          
-          rm -rf "$TMP_DIR"
-          
-          echo "=== jniLibs ==="
-          ls -la "$GITHUB_WORKSPACE/$JNILIBS/"
-          
+
+          LOADER32=$(find "$PROOT_DIR" -type f -path '*/proot/loader32' | head -1 || true)
+          if [ -n "$LOADER32" ]; then
+            echo "Loader32: $LOADER32"
+            cp "$LOADER32" "$JNILIBS/libprootloader32.so"
+            chmod 755 "$JNILIBS/libprootloader32.so"
+          fi
+
+          echo ""
+          echo "=== Locating libtalloc ==="
+          TALLOC=$(find "$TALLOC_DIR" -type f -name 'libtalloc.so.*' ! -name '*.py' | head -1 || true)
+          if [ -z "$TALLOC" ]; then
+            TALLOC=$(find "$TALLOC_DIR" -type f -name 'libtalloc.so' ! -name '*.py' | head -1 || true)
+          fi
+          test -n "$TALLOC"
+          echo "libtalloc: $TALLOC"
+          cp -L "$TALLOC" "$JNILIBS/libtalloc.so"
+          chmod 755 "$JNILIBS/libtalloc.so"
+
+          echo ""
+          echo "=== Locating libandroid-shmem ==="
+          SHMEM=$(find "$SHMEM_DIR" -type f -name 'libandroid-shmem.so' | head -1 || true)
+          test -n "$SHMEM"
+          echo "libandroid-shmem: $SHMEM"
+          cp -L "$SHMEM" "$JNILIBS/libandroid-shmem.so"
+          chmod 755 "$JNILIBS/libandroid-shmem.so"
+
+          echo ""
+          echo "=========================================="
+          echo "PRoot dependencies BEFORE patch"
+          echo "=========================================="
+          readelf -d "$JNILIBS/libproot.so" | grep NEEDED || true
+
+          echo ""
+          echo "=========================================="
+          echo "libtalloc dependencies BEFORE patch"
+          echo "=========================================="
+          readelf -d "$JNILIBS/libtalloc.so" | grep -E 'SONAME|NEEDED' || true
+
+          echo ""
+          echo "=========================================="
+          echo "Patching PRoot for Android jniLibs"
+          echo "=========================================="
+
+          # Termux PRoot declares libtalloc.so.2. Android's native-library
+          # packaging/extraction convention expects lib*.so names. Rewrite
+          # PRoot's dependency to the APK's libtalloc.so filename.
+          patchelf \
+            --replace-needed libtalloc.so.2 libtalloc.so \
+            "$JNILIBS/libproot.so"
+
+          # Make the library's own SONAME agree with the filename we ship.
+          # This avoids a second SONAME mismatch when the Android linker loads it.
+          patchelf \
+            --set-soname libtalloc.so \
+            "$JNILIBS/libtalloc.so"
+
+          echo ""
+          echo "=========================================="
+          echo "PRoot dependencies AFTER patch"
+          echo "=========================================="
+          readelf -d "$JNILIBS/libproot.so" | grep NEEDED || true
+
+          echo ""
+          echo "=========================================="
+          echo "libtalloc dependencies AFTER patch"
+          echo "=========================================="
+          readelf -d "$JNILIBS/libtalloc.so" | grep -E 'SONAME|NEEDED' || true
+
+          echo ""
+          echo "=========================================="
+          echo "ELF architecture / interpreter checks"
+          echo "=========================================="
+          file "$JNILIBS/libproot.so"
+          file "$JNILIBS/libtalloc.so"
+          file "$JNILIBS/libandroid-shmem.so"
+          readelf -l "$JNILIBS/libproot.so" | grep 'Requesting program interpreter' || true
+
+          echo ""
+          echo "=========================================="
+          echo "Final jniLibs"
+          echo "=========================================="
+          ls -lah "$JNILIBS"
+
+          echo ""
+          echo "=========================================="
+          echo "Dependency sanity checks"
+          echo "=========================================="
+
+          if readelf -d "$JNILIBS/libproot.so" | grep -q 'libtalloc.so.2'; then
+            echo "ERROR: libproot.so still requires libtalloc.so.2"
+            exit 1
+          fi
+
+          if ! readelf -d "$JNILIBS/libproot.so" | grep -q 'libtalloc.so'; then
+            echo "ERROR: libproot.so does not list libtalloc.so"
+            exit 1
+          fi
+
+          if ! readelf -d "$JNILIBS/libproot.so" | grep -q 'libandroid-shmem.so'; then
+            echo "WARNING: libproot.so does not list libandroid-shmem.so"
+          fi
+
+          test -f "$JNILIBS/libproot.so"
+          test -f "$JNILIBS/libtalloc.so"
+          test -f "$JNILIBS/libandroid-shmem.so"
+
+          echo "SUCCESS: Android PRoot native libraries prepared."
+
       - name: Flutter pub get
         run: |
           cd flutter_app
@@ -90,9 +247,40 @@ jobs:
           cd flutter_app
           flutter build apk --release --target-platform android-arm64
 
+      - name: Verify APK native libraries
+        run: |
+          set -euo pipefail
+
+          APK="flutter_app/build/app/outputs/flutter-apk/app-release.apk"
+
+          echo "=========================================="
+          echo "APK native libraries"
+          echo "=========================================="
+          unzip -l "$APK" | grep 'lib/arm64-v8a/'
+
+          echo ""
+          echo "=========================================="
+          echo "Required libraries"
+          echo "=========================================="
+          unzip -l "$APK" | grep 'lib/arm64-v8a/libproot.so'
+          unzip -l "$APK" | grep 'lib/arm64-v8a/libtalloc.so'
+          unzip -l "$APK" | grep 'lib/arm64-v8a/libandroid-shmem.so'
+
+          echo ""
+          echo "=========================================="
+          echo "Forbidden versioned libtalloc check"
+          echo "=========================================="
+          if unzip -l "$APK" | grep -q 'lib/arm64-v8a/libtalloc.so.2'; then
+            echo "ERROR: APK contains libtalloc.so.2"
+            exit 1
+          fi
+
+          echo "SUCCESS: APK contains the Android-compatible PRoot libraries."
+
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: archclaw-release
           path: flutter_app/build/app/outputs/flutter-apk/app-release.apk
           if-no-files-found: error
+          
