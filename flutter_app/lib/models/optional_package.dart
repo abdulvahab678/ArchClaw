@@ -40,13 +40,13 @@ class OptionalPackage {
     installCommand:
         'set -e; '
         'echo ">>> Installing Go via apt..."; '
-        'pacman --disable-sandbox -Sy --noconfirm golang; '
+        'pacman --disable-sandbox-filesystem -Sy --noconfirm golang; '
         'go version; '
         'echo ">>> GO_INSTALL_COMPLETE"',
     uninstallCommand:
         'set -e; '
         'echo ">>> Removing Go..."; '
-        'pacman --disable-sandbox -Rns --noconfirm golang; '
+        'pacman --disable-sandbox-filesystem -Rns --noconfirm golang; '
         'echo ">>> GO_UNINSTALL_COMPLETE"',
     checkPath: 'usr/bin/go',
     estimatedSize: '~150 MB',
@@ -63,7 +63,7 @@ class OptionalPackage {
         'set -e; '
         'echo ">>> Installing Homebrew (this may take a while)..."; '
         'touch /.dockerenv; '
-        'pacman --disable-sandbox -S --noconfirm --needed '
+        'pacman --disable-sandbox-filesystem -S --noconfirm --needed '
         'build-essential procps curl file git; '
         'NONINTERACTIVE=1 /bin/bash -c "\$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"; '
         r"grep -q 'linuxbrew' /root/.bashrc 2>/dev/null || {"
@@ -94,13 +94,13 @@ class OptionalPackage {
     installCommand:
         'set -e; '
         'echo ">>> Installing OpenSSH..."; '
-        'pacman --disable-sandbox -S --noconfirm openssh; '
+        'pacman --disable-sandbox-filesystem -S --noconfirm openssh; '
         'ssh -V; '
         'echo ">>> SSH_INSTALL_COMPLETE"',
     uninstallCommand:
         'set -e; '
         'echo ">>> Removing OpenSSH..."; '
-        'pacman --disable-sandbox -Rns --noconfirm openssh; '
+        'pacman --disable-sandbox-filesystem -Rns --noconfirm openssh; '
         'echo ">>> SSH_UNINSTALL_COMPLETE"',
     checkPath: 'usr/bin/ssh',
     estimatedSize: '~10 MB',
