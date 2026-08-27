@@ -164,10 +164,10 @@ class BootstrapService {
         // Use a specific official Arch Linux ARM mirror first.
         // The GeoIP redirect can temporarily select a mirror whose package
         // database and package files are out of sync, causing HTTP 404s.
-        'cat > /etc/pacman.d/mirrorlist <<\\'EOF\\'\\n'
-        'Server = https://ca.us.mirror.archlinuxarm.org/\\$arch/\\$repo\\n'
-        'Server = https://mirror.archlinuxarm.org/\\$arch/\\$repo\\n'
-        'EOF',
+        "cat > /etc/pacman.d/mirrorlist <<'EOF'\n"
+        "Server = https://ca.us.mirror.archlinuxarm.org/\\$arch/\\$repo\n"
+        "Server = https://mirror.archlinuxarm.org/\\$arch/\\$repo\n"
+        "EOF",
       );
       await NativeBridge.runInProot(
         // Force a full refresh so package DB and package files come from the
@@ -183,7 +183,7 @@ class BootstrapService {
       ));
       // ca-certificates: HTTPS for npm/git
       // git: openclaw has git deps (@whiskeysockets/libsignal-node)
-      // python3, make, g++: node-gyp needs these to compile native addons
+      // python3, make, gcc: node-gyp needs these to compile native addons
       //   (npm's bundled node-gyp runs as a JS module, not a spawned process,
       //    so proot-compat.js spawn mock can't intercept it)
       // dpkg extracts via tar inside proot — permissions are correct.
