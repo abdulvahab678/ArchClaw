@@ -160,7 +160,20 @@ class BootstrapService {
         progress: 0.1,
         message: 'Updating package lists...',
       ));
-      await NativeBridge.runInProot('pacman --disable-sandbox-filesystem -Sy --noconfirm');
+      await NativeBridge.runInProot(
+        // Use a specific official Arch Linux ARM mirror first.
+        // The GeoIP redirect can temporarily select a mirror whose package
+        // database and package files are out of sync, causing HTTP 404s.
+        'cat > /etc/pacman.d/mirrorlist <<\\'EOF\\'\\n'
+        'Server = https://ca.us.mirror.archlinuxarm.org/\\$arch/\\$repo\\n'
+        'Server = https://mirror.archlinuxarm.org/\\$arch/\\$repo\\n'
+        'EOF',
+      );
+      await NativeBridge.runInProot(
+        // Force a full refresh so package DB and package files come from the
+        // selected mirror's current snapshot.
+        'pacman --disable-sandbox-filesystem -Syy --noconfirm',
+      );
 
       _updateSetupNotification('Installing base packages...', progress: 52);
       onProgress(const SetupState(
