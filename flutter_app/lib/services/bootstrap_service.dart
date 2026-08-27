@@ -164,10 +164,10 @@ class BootstrapService {
         // Use a specific official Arch Linux ARM mirror first.
         // The GeoIP redirect can temporarily select a mirror whose package
         // database and package files are out of sync, causing HTTP 404s.
-        "cat > /etc/pacman.d/mirrorlist <<'EOF'\n"
-        "Server = https://ca.us.mirror.archlinuxarm.org/\\$arch/\\$repo\n"
-        "Server = https://mirror.archlinuxarm.org/\\$arch/\\$repo\n"
-        "EOF",
+        "printf '%s\\n' "
+        "'Server = https://ca.us.mirror.archlinuxarm.org/\$arch/\$repo' "
+        "'Server = https://mirror.archlinuxarm.org/\$arch/\$repo' "
+        "> /etc/pacman.d/mirrorlist",
       );
       await NativeBridge.runInProot(
         // Force a full refresh so package DB and package files come from the
